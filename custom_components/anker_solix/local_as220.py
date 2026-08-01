@@ -41,6 +41,7 @@ from .solixapi.apitypes import (
 from .solixapi.mqtt_pps import MODELS
 from .solixapi.mqttcmdmap import (
     BYTES,
+    CMD_COMMON_V2,
     CMD_REALTIME_TRIGGER,
     CMD_SOC_LIMITS_V2,
     CMD_STATUS_REQUEST,
@@ -50,8 +51,13 @@ from .solixapi.mqttcmdmap import (
     NAME,
     SIGNED,
     TYPE,
+    STATE_NAME,
     VALUE_DEFAULT,
+    VALUE_MAX,
+    VALUE_MAX_STATE,
+    VALUE_MIN,
     VALUE_OPTIONS,
+    VALUE_STEP,
     SolixMqttCommands,
 )
 from .solixapi.mqttmap import SOLIXMQTTMAP, _PPS_VERSIONS_0830
@@ -371,6 +377,48 @@ _AS220_0421 = {
 }
 
 _AS220_MAP = {
+    # AC Recharging Power - the App's charge-rate slider. CAPTURED, not inferred:
+    # on 2026-08-01 the App was set to 400 W then 600 W while the command topic was
+    # traced, producing two frames differing in exactly one field:
+    #
+    #   ff 09 22 00 03 00 0f 01 01  a1 01 22  a4 03 02 90 01  fd 0e 00 "1785617157889"
+    #   ff 09 22 00 03 00 0f 01 01  a1 01 22  a4 03 02 58 02  fd 0e 00 "1785617172822"
+    #                                          ^^^^^ 90 01 = 400, 58 02 = 600
+    #
+    # So: message 0101, field a4, 2-byte unsigned little-endian WATTS (the value is
+    # not a percentage - two distinct values settle that), with an fd ASCII-ms
+    # timestamp, i.e. CMD_COMMON_V2. The device acked 0901 both times.
+    #
+    # This is the same "AC command group" upstream already defines for A1763, A1783
+    # and A1782, and their ac_charge_limit definition matches byte for byte - same
+    # a4 field, same sile type, same 100-1200 W / step 100 range, which is exactly
+    # the App's picklist on this unit. So this is a straight reuse, not a new format.
+    #
+    # NOTE 0044 - what every other PPS model uses for CMD_AC_CHARGE_LIMIT - is inert
+    # on the AS220. Writes of 300 W and 800 W published cleanly and were ignored,
+    # with a 47-field telemetry diff confirming nothing else moved.
+    #
+    # ONLY ac_charge_limit is mapped. The upstream group also carries
+    # ac_output_switch on a2, which would create an entity able to cut the AC output
+    # - and on this unit that output is the network stack's supply. Deliberately
+    # omitted; a2/a3/a6 are left unmapped so no such entity can exist.
+    "0101": {
+        COMMAND_LIST: [
+            SolixMqttCommands.ac_charge_limit,  # field a4
+        ],
+        SolixMqttCommands.ac_charge_limit: CMD_COMMON_V2
+        | {
+            "a4": {
+                NAME: "set_ac_input_limit",  # in W; min 100, max 1200, step 100
+                TYPE: DeviceHexDataTypes.sile.value,
+                STATE_NAME: "ac_input_limit",
+                VALUE_MIN: 100,
+                VALUE_MAX: 1200,
+                VALUE_MAX_STATE: "ac_input_limit_max",
+                VALUE_STEP: 100,
+            },
+        },
+    },
     "0057": CMD_REALTIME_TRIGGER,  # for regular status messages 0405 etc
     "0100": CMD_STATUS_REQUEST
     | {  # Device status request (one time status messages 0900)
