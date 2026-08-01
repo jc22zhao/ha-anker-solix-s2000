@@ -62,6 +62,18 @@ from .coordinator import AnkerSolixDataUpdateCoordinator
 from .services import async_setup_services  # async_remove_services
 from .solixapi.apitypes import ApiCategories, SolixDeviceType
 
+# FORK-ONLY: register AS220 (SOLIX S2000) support. This is the single line that
+# differs from upstream outside of local_as220.py itself, which is what keeps the
+# vendored solixapi/ tree byte-identical to upstream and every merge conflict-free.
+# See local_as220.py for what it adds and why it is not upstreamable.
+# Runs at import so the map is in place before any platform or config flow builds
+# a device - every consumer reads SOLIXMQTTMAP.get(pn) at call time
+# (mqtt_device.py:94, mqtt_factory.py:45, api.py:175), so mutating the shared dict
+# after import is visible to all of them.
+from . import local_as220
+
+local_as220.register()
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration."""
