@@ -41,7 +41,6 @@ from .solixapi.apitypes import (
 from .solixapi.mqtt_pps import MODELS
 from .solixapi.mqttcmdmap import (
     BYTES,
-    CMD_AC_CHARGE_LIMIT,
     CMD_REALTIME_TRIGGER,
     CMD_SOC_LIMITS_V2,
     CMD_STATUS_REQUEST,
@@ -52,11 +51,7 @@ from .solixapi.mqttcmdmap import (
     SIGNED,
     TYPE,
     VALUE_DEFAULT,
-    VALUE_MAX,
-    VALUE_MAX_STATE,
-    VALUE_MIN,
     VALUE_OPTIONS,
-    VALUE_STEP,
     SolixMqttCommands,
 )
 from .solixapi.mqttmap import SOLIXMQTTMAP, _PPS_VERSIONS_0830
@@ -376,30 +371,6 @@ _AS220_0421 = {
 }
 
 _AS220_MAP = {
-    # AC Recharging Power - the app's charge-rate slider. Capping this matters during
-    # an outage: the S2000's AC input sits on a Pion-backed circuit, so an uncapped
-    # recharge pulls hard on the much larger Pion pack, and it also lets the unit be
-    # fed from the EGO inverter or the TP300V2 without tripping their overcurrent
-    # protection.
-    #
-    # NOT confirmed by capture on AS220 - inferred. Message type 0044 is what every
-    # other PPS model in SOLIXMQTTMAP uses for CMD_AC_CHARGE_LIMIT (A1780, A1783 and
-    # the C1000/C800 family all map it identically), and the command's STATE_NAME
-    # "ac_input_limit" is already decoded by _AS220_0421 at a4/04 - so a write can be
-    # verified against the device's own telemetry read-back, which is how the 0103
-    # SoC limits were confirmed. VALUE_MAX_STATE binds the ceiling to the device's
-    # reported ac_input_limit_max (a3/04, reads 1200 on this unit) rather than
-    # hardcoding a variant-specific number.
-    "0044": CMD_AC_CHARGE_LIMIT
-    | {
-        "a2": {
-            **CMD_AC_CHARGE_LIMIT["a2"],
-            VALUE_MIN: 100,
-            VALUE_MAX: 1200,
-            VALUE_MAX_STATE: "ac_input_limit_max",
-            VALUE_STEP: 100,
-        }
-    },
     "0057": CMD_REALTIME_TRIGGER,  # for regular status messages 0405 etc
     "0100": CMD_STATUS_REQUEST
     | {  # Device status request (one time status messages 0900)
