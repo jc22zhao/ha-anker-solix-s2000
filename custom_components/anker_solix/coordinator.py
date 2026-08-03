@@ -1,14 +1,15 @@
 """DataUpdateCoordinator for Anker Solix."""
 
-from asyncio import TimerHandle, run_coroutine_threadsafe, sleep
+from asyncio import sleep
 from datetime import datetime, timedelta
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import (
@@ -29,7 +30,7 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
     config_entry: ConfigEntry
     client: AnkerSolixApiClient
     details_delayed: datetime | None
-    update_handler: TimerHandle | None
+    update_handler: CALLBACK_TYPE | None
     registered_devices: set
     mqtt_values: int
 
@@ -91,7 +92,9 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
                     logging.INFO if ALLOW_TESTMODE else logging.DEBUG,
                     "Coordinator %s found additional %s, reloading platforms to setup entities",
                     self.client.api.apisession.nickname,
-                    "MQTT values" if mcount > self.mqtt_values else "devices",
+                    f"MQTT values ({diff})"
+                    if (diff := max(0, mcount - self.mqtt_values))
+                    else f"devices ({len(ids - self.registered_devices)})",
                 )
                 await self.async_reload_config(register_devices=data)
             # trigger device removal if not found anymore
@@ -132,30 +135,31 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
         consolidating parallel update requests during the state restore processing or MQTT data updates.
         """
         self.data = await self.client.async_get_data(from_cache=True)
-        if delayed and not self.update_handler:
-            # get handler for delayed listener update
-            self.update_handler = self.hass.loop.call_later(
-                delay=(delay := 2.0), callback=self.async_update_listeners
-            )
-            LOGGER.debug(
-                "Coordinator %s delayed listener update for %s seconds during MQTT data or entity restore processing",
-                self.client.api.apisession.nickname,
-                int(delay),
-            )
-            return
-        if self.update_handler:
-            # check if upate handler execution was done and remove handler
-            if self.hass.loop.time() - self.update_handler.when() <= 0:
-                # skip listener update for now
-                LOGGER.log(
-                    # logging.INFO if ALLOW_TESTMODE else logging.DEBUG,
-                    logging.DEBUG,
+        if delayed:
+            # Call later and keep the cancelation callback in the update_handler
+            if self.update_handler is None:
+                self.update_handler = async_call_later(
+                    self.hass,
+                    2.0,
+                    self._delayed_listener_update,
+                )
+                LOGGER.debug(
+                    "Coordinator %s delayed listener update for 2 seconds during MQTT data or entity restore processing",
+                    self.client.api.apisession.nickname,
+                )
+            else:
+                LOGGER.debug(
                     "Coordinator %s skipped listener update due to active delayed processing",
                     self.client.api.apisession.nickname,
                 )
-                return
-            self.update_handler = None
+            return
         # inform listeners about changed data
+        self.async_update_listeners()
+
+    @callback
+    def _delayed_listener_update(self, _now) -> None:
+        """Execute delayed listener update."""
+        self.update_handler = None
         self.async_update_listeners()
 
     async def async_refresh_device_details(
@@ -221,9 +225,7 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
             ),
         )
         # wrap the async method to refresh coordinator from cache
-        run_coroutine_threadsafe(
-            self.async_refresh_data_from_apidict(delayed=True), self.hass.loop
-        )
+        self.hass.add_job(self.async_refresh_data_from_apidict(delayed=True))
 
     async def async_shutdown(self) -> None:
         """Clear Api cache to close any active MQTT loop and then call super method."""
