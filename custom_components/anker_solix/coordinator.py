@@ -19,6 +19,10 @@ from .api_client import (
     AnkerSolixApiClientError,
     AnkerSolixApiClientRetryExceededError,
 )
+
+# Backoff used when Anker rate-limits us. Long enough not to hammer a cloud
+# that is already throttling, short enough to recover unattended.
+THROTTLE_RETRY_SECONDS: int = 900
 from .const import ALLOW_TESTMODE, DOMAIN, LOGGER, PLATFORMS
 from .solixapi.apitypes import SolixDeviceType
 
@@ -114,11 +118,18 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
                     str(self.mqtt_values),
                 )
                 self.mqtt_values = mcount
-        except (
-            AnkerSolixApiClientAuthenticationError,
-            AnkerSolixApiClientRetryExceededError,
-        ) as exception:
+        except AnkerSolixApiClientAuthenticationError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
+        except AnkerSolixApiClientRetryExceededError as exception:
+            # 2026-09-15, JZ: split out of the AuthenticationError clause above.
+            # RetryExceeded is Anker rate-limiting (api error 100053) - transient
+            # and self-clearing. Upstream raised ConfigEntryAuthFailed for it, and
+            # that is TERMINAL in HA: it unloads the entry, destroys every
+            # device-detail entity built in async_setup_entry, and waits for a
+            # human to press Reconfigure. That is exactly why this integration
+            # kept demanding a manual reconfigure that re-entered the same stored
+            # credentials - the credentials were never the problem. Retry instead.
+            raise UpdateFailed(retry_after=THROTTLE_RETRY_SECONDS) from exception
         except AnkerSolixApiClientCommunicationError as exception:
             # If the API is providing backoff signals, these can be honored via the retry_after parameter
             # This parameter will be ignored on first refresh during config entry setup

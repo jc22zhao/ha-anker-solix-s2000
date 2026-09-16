@@ -19,7 +19,11 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
 from homeassistant.helpers import issue_registry as ir, restore_state
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
@@ -115,11 +119,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_refresh_delay()
         # https://developers.home-assistant.io/docs/integration_fetching_data#coordinated-single-api-poll-for-data-for-all-entities
         await coordinator.async_config_entry_first_refresh()
-    except (
-        api_client.AnkerSolixApiClientAuthenticationError,
-        api_client.AnkerSolixApiClientRetryExceededError,
-    ) as exception:
+    except api_client.AnkerSolixApiClientAuthenticationError as exception:
         raise ConfigEntryAuthFailed(exception) from exception
+    except api_client.AnkerSolixApiClientRetryExceededError as exception:
+        # 2026-09-15, JZ: see the matching note in coordinator.py. Rate limiting
+        # is transient, so make HA retry setup with its own backoff instead of
+        # parking the entry in a reauth state only a human can clear.
+        raise ConfigEntryNotReady(exception) from exception
     # Registers update listener to update config entry when options are updated.
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 

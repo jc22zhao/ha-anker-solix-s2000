@@ -43,12 +43,17 @@ It writes to the device. Use it at your own risk.
 
 ## What this fork adds
 
-Everything lives in a single file —
+The AS220 device support lives in a single file —
 [`custom_components/anker_solix/local_as220.py`](custom_components/anker_solix/local_as220.py) —
 plus a two-line hook in `__init__.py`. Nothing inside the vendored `solixapi/` tree is modified,
 which is deliberate: upstream replaces that directory wholesale on each sync with the API library,
 so anything placed inside it would conflict on every release. Registering into `SOLIXMQTTMAP` at
-runtime instead means this fork shares no modified files with upstream and merges cleanly.
+runtime instead keeps the device support itself free of modified upstream files.
+
+Item 3 is the exception and the only one: it is a behavioural fix, not device support, and it edits
+`coordinator.py` and `__init__.py` directly. Expect a merge conflict in both on each upstream sync.
+The change is small and self-contained, and resolving that conflict by hand is preferable to losing
+it — without it, any Anker rate-limit stalls the integration until a human clicks Reconfigure.
 
 1. **AS220 telemetry** — the `0421` / `0900` message map (~13 field groups: SoC, main battery SoC,
    AC input/output power, DC input, USB power, temperature, remaining runtime, usage mode, SoH, AC
@@ -74,6 +79,24 @@ runtime instead means this fork shares no modified files with upstream and merge
 
    > **Caution:** holding a pack well below full indefinitely can let the SoC gauge drift, since
    > packs typically re-reference near full charge. Letting it reach 100 % occasionally is prudent.
+
+3. **Anker rate limiting no longer demands a manual reconfigure.** Upstream catches
+   `AnkerSolixApiClientRetryExceededError` in the same `except` clause as
+   `AnkerSolixApiClientAuthenticationError` and raises `ConfigEntryAuthFailed` for both. That is a
+   terminal state in Home Assistant: the config entry is unloaded, every device-detail entity built
+   in `async_setup_entry` is destroyed, and a reauth card waits for a human — even though the
+   stored credentials are fine and Anker's throttle (api error `100053`) clears on its own. Hitting
+   Reconfigure and retyping the same username and password therefore "fixes" it only by virtue of
+   time having passed. The conflation is visible in the source: the docstring on
+   `AnkerSolixApiClientRetryExceededError` reads *"Exception to indicate an authentication error"*,
+   copy-pasted from the class above it.
+
+   Here the two are split. `RetryExceeded` raises `UpdateFailed(retry_after=900)` in the coordinator
+   and `ConfigEntryNotReady` during setup — both of which Home Assistant retries with its own
+   backoff. A genuinely wrong password still raises `ConfigEntryAuthFailed` and still surfaces the
+   reauth card, which is the behaviour that clause was written for.
+
+   Not device-specific, and worth upstreaming.
 
 `register()` is written to shrink as upstream catches up: once a release ships its own AS220 map,
 that map wins and only the still-missing pieces are filled in. When nothing is left to add, the file
