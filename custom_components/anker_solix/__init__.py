@@ -4,7 +4,11 @@ For more details about this integration, please refer to
 https://github.com/thomluther/ha-anker-solix
 """
 
-from datetime import datetime, timedelta
+# (fork) Aliased: once HA loads this integration's own `datetime` platform, the
+# submodule is bound as `datetime` in this package namespace and replaces a plain
+# `datetime` import here (2026-10-13: setup crashed with "module ... has no
+# attribute 'now'" on the first retry after a restart).
+from datetime import datetime as dt_datetime, timedelta
 from pathlib import Path
 
 from aiohttp import ClientTimeout
@@ -185,7 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinator.data or {}
         ):
             coordinator.missing_since.setdefault(
-                dev_entry.serial_number, datetime.now()
+                dev_entry.serial_number, dt_datetime.now()
             )
     # Create an entry in the hass object with the coordinator
     hass.data[DOMAIN][entry.entry_id] = coordinator
