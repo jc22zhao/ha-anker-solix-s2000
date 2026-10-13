@@ -50,10 +50,11 @@ which is deliberate: upstream replaces that directory wholesale on each sync wit
 so anything placed inside it would conflict on every release. Registering into `SOLIXMQTTMAP` at
 runtime instead keeps the device support itself free of modified upstream files.
 
-Item 3 is the exception and the only one: it is a behavioural fix, not device support, and it edits
-`coordinator.py` and `__init__.py` directly. Expect a merge conflict in both on each upstream sync.
-The change is small and self-contained, and resolving that conflict by hand is preferable to losing
-it — without it, any Anker rate-limit stalls the integration until a human clicks Reconfigure.
+Items 3 and 4 are the exceptions: they are behavioural fixes, not device support, and they edit
+`coordinator.py`, `__init__.py` and `config_flow.py` directly. Expect merge conflicts in those files
+on each upstream sync. Both changes are small and self-contained, and resolving the conflicts by hand
+is preferable to losing them — without item 3, any Anker rate-limit stalls the integration until a
+human clicks Reconfigure; without item 4, one incomplete cloud answer deletes a device's entities.
 
 1. **AS220 telemetry** — the `0421` / `0900` message map (~13 field groups: SoC, main battery SoC,
    AC input/output power, DC input, USB power, temperature, remaining runtime, usage mode, SoH, AC
@@ -95,6 +96,18 @@ it — without it, any Anker rate-limit stalls the integration until a human cli
    and `ConfigEntryNotReady` during setup — both of which Home Assistant retries with its own
    backoff. A genuinely wrong password still raises `ConfigEntryAuthFailed` and still surfaces the
    reauth card, which is the behaviour that clause was written for.
+
+   Not device-specific, and worth upstreaming.
+
+4. **A device missing from one cloud answer is no longer deleted.** Upstream removes a device —
+   and so every one of its entities — the first time a single poll, or the data fetched at setup,
+   comes back without it. Anker's cloud occasionally answers with an incomplete device list: on
+   2026-10-13 it left the S2000 out of one poll and all 38 of its entities were deleted, which took
+   a manual reload and a realtime-trigger press to rebuild. Here a missing device's entities simply
+   go unavailable, and the device is removed only if it is still absent after one hour
+   (`DEVICE_REMOVAL_GRACE` in `coordinator.py`). Setup no longer removes devices that are merely
+   absent; it starts their grace period instead. Devices excluded by the options are still removed
+   immediately, and a device genuinely removed from the account still disappears, an hour late.
 
    Not device-specific, and worth upstreaming.
 

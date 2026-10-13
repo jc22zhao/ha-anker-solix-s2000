@@ -624,6 +624,7 @@ async def async_check_and_remove_devices(
     apidata: dict,
     excluded: set | None = None,
     configured_user: str | None = None,
+    remove_missing: bool = True,
 ) -> config_entries.ConfigEntry | None:
     """Check if given user input with its initial apidata has shared devices with existing configuration.
 
@@ -739,7 +740,9 @@ async def async_check_and_remove_devices(
                 ):
                     return cfg_entry
             # device is registered for same account, check if still used in coordinator data or excluded and add to obsolete list for removal
-            elif dev_entry.serial_number not in apidata or (
+            # (fork) remove_missing=False leaves devices absent from apidata to the
+            # coordinator's grace period instead of removing them on one answer
+            elif (remove_missing and dev_entry.serial_number not in apidata) or (
                 excluded
                 and not {apidata.get(dev_entry.serial_number, {}).get("type")}
                 - excluded

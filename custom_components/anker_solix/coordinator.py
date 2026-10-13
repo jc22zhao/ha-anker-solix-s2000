@@ -23,6 +23,9 @@ from .api_client import (
 # Backoff used when Anker rate-limits us. Long enough not to hammer a cloud
 # that is already throttling, short enough to recover unattended.
 THROTTLE_RETRY_SECONDS: int = 900
+# How long a registered device must stay absent from the Api data before it is
+# removed together with its entities. See async_remove_missing_devices.
+DEVICE_REMOVAL_GRACE: timedelta = timedelta(hours=1)
 from .const import ALLOW_TESTMODE, DOMAIN, LOGGER, PLATFORMS
 from .solixapi.apitypes import SolixDeviceType
 
@@ -36,6 +39,7 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
     details_delayed: datetime | None
     update_handler: CALLBACK_TYPE | None
     registered_devices: set
+    missing_since: dict[str, datetime]
     mqtt_values: int
 
     def __init__(
@@ -51,6 +55,7 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
         self.details_delayed = None
         self.update_handler = None
         self.registered_devices = set()
+        self.missing_since = {}
         self.mqtt_values = 0
 
         super().__init__(
@@ -102,12 +107,9 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 await self.async_reload_config(register_devices=data)
             # trigger device removal if not found anymore
-            elif (
-                ids
-                and self.registered_devices
-                and (removed := self.registered_devices - ids)
-            ):
-                await self.async_remove_device(devices=removed)
+            # (fork) only once it has stayed missing for the grace period
+            elif ids and (self.registered_devices - ids or self.missing_since):
+                await self.async_remove_missing_devices(ids)
             # adjust mqtt count to recognize new values
             elif mcount < self.mqtt_values:
                 LOGGER.log(
@@ -216,12 +218,9 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 await self.async_reload_config(register_devices=data)
             # trigger device removal if not found anymore
-            elif (
-                ids
-                and self.registered_devices
-                and (removed := self.registered_devices - ids)
-            ):
-                await self.async_remove_device(devices=removed)
+            # (fork) only once it has stayed missing for the grace period
+            elif ids and (self.registered_devices - ids or self.missing_since):
+                await self.async_remove_missing_devices(ids)
 
     def update_callback(self, sn: str | None = None, **args) -> None:
         """Define callback for coordinator updates upon MQTT value changes."""
@@ -278,6 +277,45 @@ class AnkerSolixDataUpdateCoordinator(DataUpdateCoordinator):
             self.mqtt_values = self.client.get_mqtt_valuecount()
             return True
         return False
+
+    async def async_remove_missing_devices(self, ids: set) -> None:
+        """Remove registered devices only after they stay missing for DEVICE_REMOVAL_GRACE.
+
+        Fork change (2026-10-13, JZ). Upstream removed a device - and with it every
+        one of its entities - the first time a single poll came back without it.
+        Anker's cloud sometimes answers with an incomplete device list: on
+        2026-10-13 07:34 it left the S2000 out of one poll, which deleted all 38 of
+        its entities and took a manual reload plus a realtime-trigger press to
+        rebuild them. Now a missing device's entities just go unavailable (they all
+        read coordinator data defensively), and the device is only removed when it
+        is still absent after the grace period. Devices that come back are
+        forgotten. A device really removed from the account still disappears, an
+        hour late.
+        """
+        now = datetime.now()
+        for sn in [sn for sn in self.missing_since if sn in ids]:
+            LOGGER.info(
+                "Api Coordinator %s: device %s is back in the Api data after %s, keeping it",
+                self.config_entry.title,
+                sn,
+                str(now - self.missing_since.pop(sn)).split(".", maxsplit=1)[0],
+            )
+        missing = (self.registered_devices | set(self.missing_since)) - ids
+        for sn in missing:
+            if sn not in self.missing_since:
+                self.missing_since[sn] = now
+                LOGGER.warning(
+                    "Api Coordinator %s: device %s is missing from the Api data, it will be removed if still missing after %s",
+                    self.config_entry.title,
+                    sn,
+                    DEVICE_REMOVAL_GRACE,
+                )
+        if due := {
+            sn for sn in missing if now - self.missing_since[sn] >= DEVICE_REMOVAL_GRACE
+        }:
+            await self.async_remove_device(devices=due)
+            for sn in due:
+                self.missing_since.pop(sn, None)
 
     async def async_remove_device(self, devices: set) -> None:
         """Remove given devices if they have no active data."""

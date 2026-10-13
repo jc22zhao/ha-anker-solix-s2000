@@ -4,7 +4,7 @@ For more details about this integration, please refer to
 https://github.com/thomluther/ha-anker-solix
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiohttp import ClientTimeout
@@ -24,7 +24,11 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
 )
-from homeassistant.helpers import issue_registry as ir, restore_state
+from homeassistant.helpers import (
+    device_registry as dr,
+    issue_registry as ir,
+    restore_state,
+)
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.typing import ConfigType
@@ -137,6 +141,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         user_input=entry.data,
         apidata=coordinator.data,
         excluded=(excludes - registered_excludes),
+        # (fork, 2026-10-13) don't remove a device just because this one setup-time
+        # answer left it out - see coordinator.async_remove_missing_devices
+        remove_missing=False,
     ):
         # device is already registered for another account, abort configuration
         entry.async_cancel_retry_setup()
@@ -168,6 +175,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_NAME: str(shared_cfg.title),
             },
         )
+    # (fork) Devices registered for this entry but absent from the setup-time Api
+    # data start their removal grace period now; the coordinator removes them only
+    # if they are still missing after DEVICE_REMOVAL_GRACE.
+    for dev_entry in dr.async_entries_for_config_entry(
+        dr.async_get(hass), entry.entry_id
+    ):
+        if dev_entry.serial_number and dev_entry.serial_number not in (
+            coordinator.data or {}
+        ):
+            coordinator.missing_since.setdefault(
+                dev_entry.serial_number, datetime.now()
+            )
     # Create an entry in the hass object with the coordinator
     hass.data[DOMAIN][entry.entry_id] = coordinator
     # Update registered excludes in config entry to compare changes upon reloads
